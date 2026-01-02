@@ -137,6 +137,73 @@ def login_modal():
         on_open_change=state.State.toggle_login_modal,
     )
 
+def settings_modal():
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("API Settings"),
+            rx.dialog.description("Store provider-specific API keys for this account."),
+            rx.vstack(
+                rx.vstack(
+                    rx.text("OpenAI", size="2", weight="bold"),
+                    rx.input(
+                        placeholder="OpenAI API Key (sk-...)",
+                        type="password",
+                        on_change=state.State.set_openai_api_key,
+                        value=state.State.openai_api_key,
+                        width="100%"
+                    ),
+                    spacing="2",
+                    width="100%"
+                ),
+                rx.vstack(
+                    rx.text("Claude (Anthropic)", size="2", weight="bold"),
+                    rx.input(
+                        placeholder="Anthropic API Key (sk-ant...)",
+                        type="password",
+                        on_change=state.State.set_anthropic_api_key,
+                        value=state.State.anthropic_api_key,
+                        width="100%"
+                    ),
+                    spacing="2",
+                    width="100%"
+                ),
+                rx.vstack(
+                    rx.text("Gemini (Google)", size="2", weight="bold"),
+                    rx.input(
+                        placeholder="Google API Key",
+                        type="password",
+                        on_change=state.State.set_google_api_key,
+                        value=state.State.google_api_key,
+                        width="100%"
+                    ),
+                    spacing="2",
+                    width="100%"
+                ),
+                rx.vstack(
+                    rx.text("Tavily (Deep Search)", size="2", weight="bold"),
+                    rx.input(
+                        placeholder="TAVILY_API_KEY",
+                        type="password",
+                        on_change=state.State.set_search_api_key,
+                        value=state.State.search_api_key,
+                        width="100%"
+                    ),
+                    spacing="2",
+                    width="100%"
+                ),
+                spacing="4",
+                width="100%",
+                margin_top="4"
+            ),
+            rx.dialog.close(
+                rx.button("Close", size="1", color="gray", variant="soft", margin_top="4"),
+            ),
+            rx.button("Save", size="1", margin_top="3", on_click=state.State.save_api_keys),
+        ),
+        open=state.State.show_settings,
+        on_open_change=state.State.toggle_settings_modal,
+    )
+
 def sidebar():
     return rx.vstack(
         rx.hstack(
@@ -153,17 +220,25 @@ def sidebar():
            on_change=state.State.set_selected_model_key,
            width="100%"
         ),
-        rx.text("API Key", size="2", weight="bold", margin_top="4"),
-        rx.input(
-            placeholder=state.State.current_api_key_placeholder,
-            on_change=state.State.set_current_api_key,
-            value=state.State.current_api_key,
-            type="password",
-            width="100%"
-        ),
+        rx.button("API Settings", on_click=state.State.toggle_settings_modal, size="1", variant="outline", width="100%"),
+        settings_modal(),
         # Usage Stats Moved to Bottom
         rx.divider(margin_bottom="4"),
         # Stats Block removed from here
+        rx.hstack(
+            rx.icon("search", size=16, color="gray"),
+            rx.input(
+                placeholder="Search",
+                on_change=state.State.set_history_search_query,
+                value=state.State.history_search_query,
+                width="100%"
+            ),
+            align="center",
+            width="100%",
+            padding="2",
+            bg=rx.color("gray", 2),
+            border_radius="4px",
+        ),
         rx.button("➕ New Topic", on_click=state.State.add_new_topic, width="100%"),
         rx.cond(
             state.State.user,
@@ -171,74 +246,201 @@ def sidebar():
                 rx.hstack(
                     rx.text("History", size="2", weight="bold"),
                     rx.spacer(),
-                    rx.button("🆕 New", on_click=state.State.start_new_chat, size="1", variant="ghost"),
+                    rx.button(
+                        rx.cond(state.State.show_history_panel, "▼", "▶"),
+                        on_click=state.State.toggle_history_panel,
+                        size="1",
+                        variant="ghost",
+                    ),
                     width="100%",
                     align="center",
                     margin_top="4"
                 ),
-                rx.scroll_area(
-                    rx.vstack(
-                        rx.foreach(
-                            state.State.chat_list,
-                            lambda chat: DraggableBox.create(
-                                rx.button(
-                                    chat["title"],
-                                    on_click=lambda: state.State.load_chat(chat["id"]),
-                                    variant="ghost",
+                rx.cond(
+                    state.State.show_history_panel,
+                    rx.scroll_area(
+                        rx.vstack(
+                            rx.foreach(
+                                state.State.chat_groups,
+                                lambda group: rx.vstack(
+                                    rx.text(
+                                        group.date,
+                                        size="1",
+                                        weight="bold",
+                                        color="gray",
+                                        margin_top="2",
+                                    ),
+                                    rx.foreach(
+                                        group.chats,
+                                        lambda chat: rx.vstack(
+                                            rx.context_menu.root(
+                                                rx.context_menu.trigger(
+                                                    rx.box(
+                                                        DraggableBox.create(
+                                                            rx.button(
+                                                                chat["title"],
+                                                                on_click=lambda: state.State.load_chat(chat["id"].to(str)),
+                                                                variant="ghost",
+                                                                width="100%",
+                                                                justify_content="start",
+                                                                font_size="14px",
+                                                                color=rx.cond(
+                                                                    chat["id"] == state.State.active_chat_id,
+                                                                    "green",
+                                                                    "gray",
+                                                                ),
+                                                                font_weight=rx.cond(
+                                                                    chat["id"] == state.State.active_chat_id,
+                                                                    "bold",
+                                                                    "normal",
+                                                                ),
+                                                            ),
+                                                            draggable=True,
+                                                            on_drag_start=lambda: state.State.set_dragged_chat_id(chat["id"].to(str)),
+                                                            width="100%"
+                                                        ),
+                                                        width="100%",
+                                                    ),
+                                                ),
+                                                rx.context_menu.content(
+                                                    rx.context_menu.item(
+                                                        "Delete",
+                                                        on_click=lambda: state.State.delete_chat(chat["id"]),
+                                                        color="red",
+                                                    ),
+                                                ),
+                                            ),
+                                            rx.cond(
+                                                chat["id"] == state.State.active_chat_id,
+                                                rx.box(
+                                                    rx.vstack(
+                                                        rx.foreach(
+                                                            state.State.flat_tree.to(list),
+                                                            tree_row
+                                                        ),
+                                                        spacing="0",
+                                                        width="100%"
+                                                    ),
+                                                    width="100%",
+                                                    padding_left="12px",
+                                                    padding_y="1",
+                                                ),
+                                            ),
+                                            spacing="1",
+                                            width="100%",
+                                            align_items="start",
+                                        ),
+                                    ),
+                                    spacing="1",
                                     width="100%",
-                                    justify_content="start",
-                                    font_size="14px",
-                                    color="gray",
+                                    align_items="start",
                                 ),
-                                draggable=True,
-                                on_drag_start=lambda: state.State.set_dragged_chat_id(chat["id"]),
-                                width="100%"
-                            )
+                            ),
+                            spacing="1"
                         ),
-                        spacing="1"
+                        max_height="200px",
+                        width="100%",
                     ),
-                    max_height="200px"
-                )
+                ),
+                width="100%",
             )
         ),
-        rx.divider(),
-        rx.vstack(
-            rx.foreach(
-                state.State.flat_tree.to(list),
-                tree_row
+        rx.cond(
+            ~state.State.user,
+            rx.vstack(
+                rx.divider(),
+                rx.vstack(
+                    rx.foreach(
+                        state.State.flat_tree.to(list),
+                        tree_row
+                    ),
+                    spacing="0", # Tight spacing
+                    width="100%"
+                ),
             ),
-            spacing="0", # Tight spacing
-            width="100%"
         ),
         # Removed Spacer to eliminate gap
         rx.divider(margin_y="2"),
         rx.divider(margin_y="2"),
         rx.vstack(
-            rx.text("Session Usage", size="2", weight="bold"),
             rx.hstack(
-                rx.text("Cost:", size="1", color="gray"),
-                rx.text(f"${state.State.session_cost}", size="1", weight="bold"),
-                justify="between",
-                width="100%"
-            ),
-            rx.hstack(
-                rx.text("Tokens:", size="1", color="gray"),
-                rx.text(f"{state.State.session_tokens}", size="1", weight="bold"),
-                justify="between",
-                width="100%"
+                rx.text("Token Usage & Cost", size="2", weight="bold"),
+                rx.spacer(),
+                rx.button(
+                    rx.cond(state.State.show_usage_panel, "▼", "▶"),
+                    on_click=state.State.toggle_usage_panel,
+                    size="1",
+                    variant="ghost",
+                ),
+                width="100%",
+                align="center",
             ),
             rx.cond(
-                state.State.user,
+                state.State.show_usage_panel,
                 rx.vstack(
-                    rx.divider(margin_y="2"),
-                     rx.hstack(
-                        rx.text("Total Cost:", size="1", color="gray"),
-                        rx.text(f"${state.State.user['total_cost']}", size="1", weight="bold"),
+                    rx.text("Session Usage", size="2", weight="bold"),
+                    rx.hstack(
+                        rx.text("Cost:", size="1", color="gray"),
+                        rx.text(f"${state.State.session_cost}", size="1", weight="bold"),
                         justify="between",
                         width="100%"
                     ),
-                    width="100%"
-                )
+                    rx.hstack(
+                        rx.text("Tokens:", size="1", color="gray"),
+                        rx.text(f"{state.State.session_tokens}", size="1", weight="bold"),
+                        justify="between",
+                        width="100%"
+                    ),
+                    rx.cond(
+                        state.State.user,
+                        rx.vstack(
+                            rx.divider(margin_y="2"),
+                            rx.text("Daily Usage", size="2", weight="bold"),
+                            rx.hstack(
+                                rx.text("Cost:", size="1", color="gray"),
+                                rx.text(f"${state.State.daily_cost}", size="1", weight="bold"),
+                                justify="between",
+                                width="100%"
+                            ),
+                            rx.hstack(
+                                rx.text("Tokens:", size="1", color="gray"),
+                                rx.text(f"{state.State.daily_tokens}", size="1", weight="bold"),
+                                justify="between",
+                                width="100%"
+                            ),
+                            rx.divider(margin_y="2"),
+                            rx.text("Weekly Usage", size="2", weight="bold"),
+                            rx.hstack(
+                                rx.text("Cost:", size="1", color="gray"),
+                                rx.text(f"${state.State.weekly_cost}", size="1", weight="bold"),
+                                justify="between",
+                                width="100%"
+                            ),
+                            rx.hstack(
+                                rx.text("Tokens:", size="1", color="gray"),
+                                rx.text(f"{state.State.weekly_tokens}", size="1", weight="bold"),
+                                justify="between",
+                                width="100%"
+                            ),
+                            rx.divider(margin_y="2"),
+                            rx.text("Overall Usage", size="2", weight="bold"),
+                            rx.hstack(
+                                rx.text("Cost:", size="1", color="gray"),
+                                rx.text(f"${state.State.user['total_cost']}", size="1", weight="bold"),
+                                justify="between",
+                                width="100%"
+                            ),
+                            rx.hstack(
+                                rx.text("Tokens:", size="1", color="gray"),
+                                rx.text(f"{state.State.user['total_tokens']}", size="1", weight="bold"),
+                                justify="between",
+                                width="100%"
+                            ),
+                            width="100%"
+                        ),
+                    ),
+                    width="100%",
+                ),
             ),
             width="100%",
             padding="2",
@@ -394,7 +596,7 @@ def chat_area():
             rx.form(
                 rx.hstack(
                     rx.input(placeholder="Type a message...", id="chat_input", flex="1"),
-                    rx.checkbox("Enable Search", checked=state.State.use_google_search, on_change=state.State.set_use_google_search),
+                    rx.checkbox("Deep Search (Tavily)", checked=state.State.use_google_search, on_change=state.State.set_use_google_search),
                     rx.button("Send", type="submit", loading=state.State.processing),
                     align_items="center",
                     spacing="4"
@@ -425,6 +627,25 @@ def index():
 app = rx.App(
     stylesheets=[
         "https://cdn.jsdelivr.net/npm/katex@0.16.0/dist/katex.min.css",
-    ]
+    ],
+    head_components=[
+        rx.el.link(
+            rel="icon",
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%8C%B3%3C/text%3E%3C/svg%3E",
+        ),
+        rx.el.link(
+            rel="shortcut icon",
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%8C%B3%3C/text%3E%3C/svg%3E",
+        ),
+        rx.el.link(
+            rel="apple-touch-icon",
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%8C%B3%3C/text%3E%3C/svg%3E",
+        ),
+        rx.el.link(
+            rel="mask-icon",
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%8C%B3%3C/text%3E%3C/svg%3E",
+            color="transparent",
+        ),
+    ],
 )
-app.add_page(index, on_load=state.State.on_load)
+app.add_page(index, on_load=state.State.on_load, title="Conversation Tree")

@@ -14,7 +14,18 @@ def init_db():
             total_tokens INTEGER DEFAULT 0,
             openai_key TEXT,
             anthropic_key TEXT,
-            google_key TEXT
+            google_key TEXT,
+            tavily_key TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS usage_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT,
+            session_id TEXT,
+            cost REAL DEFAULT 0.0,
+            tokens INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     c.execute('''
@@ -46,6 +57,20 @@ def check_and_migrate():
         c.execute("ALTER TABLE users ADD COLUMN openai_key TEXT")
         c.execute("ALTER TABLE users ADD COLUMN anthropic_key TEXT")
         c.execute("ALTER TABLE users ADD COLUMN google_key TEXT")
+    if "tavily_key" not in columns:
+        print("Migrating database: Adding tavily_key column to users table...")
+        c.execute("ALTER TABLE users ADD COLUMN tavily_key TEXT")
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS usage_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT,
+            session_id TEXT,
+            cost REAL DEFAULT 0.0,
+            tokens INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
         
     conn.commit()
     conn.close()
@@ -70,7 +95,7 @@ def create_user(email, password):
 def authenticate_user(email, password):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT email, total_cost, total_tokens, openai_key, anthropic_key, google_key FROM users WHERE email = ? AND password_hash = ?", 
+    c.execute("SELECT email, total_cost, total_tokens, openai_key, anthropic_key, google_key, tavily_key FROM users WHERE email = ? AND password_hash = ?", 
               (email, hash_password(password)))
     row = c.fetchone()
     conn.close()
@@ -81,15 +106,16 @@ def authenticate_user(email, password):
             "total_tokens": row[2],
             "openai_key": row[3],
             "anthropic_key": row[4],
-            "google_key": row[5]
+            "google_key": row[5],
+            "tavily_key": row[6]
         }
     return None
 
-def update_user_api_keys(email, openai_key, anthropic_key, google_key):
+def update_user_api_keys(email, openai_key, anthropic_key, google_key, tavily_key):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("UPDATE users SET openai_key = ?, anthropic_key = ?, google_key = ? WHERE email = ?", 
-              (openai_key, anthropic_key, google_key, email))
+    c.execute("UPDATE users SET openai_key = ?, anthropic_key = ?, google_key = ?, tavily_key = ? WHERE email = ?", 
+              (openai_key, anthropic_key, google_key, tavily_key, email))
     conn.commit()
     conn.close()
 
@@ -100,6 +126,51 @@ def update_user_stats(email, cost_increment, token_increment):
               (cost_increment, token_increment, email))
     conn.commit()
     conn.close()
+
+def log_usage(email, cost_increment, token_increment, session_id, created_at_iso):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO usage_log (email, session_id, cost, tokens, created_at) VALUES (?, ?, ?, ?, ?)",
+        (email, session_id, cost_increment, token_increment, created_at_iso),
+    )
+    conn.commit()
+    conn.close()
+
+def get_usage_rollups(email):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT
+            COALESCE(SUM(cost), 0.0),
+            COALESCE(SUM(tokens), 0)
+        FROM usage_log
+        WHERE email = ?
+          AND date(created_at, 'localtime') = date('now', 'localtime')
+        """,
+        (email,),
+    )
+    daily_cost, daily_tokens = c.fetchone()
+    c.execute(
+        """
+        SELECT
+            COALESCE(SUM(cost), 0.0),
+            COALESCE(SUM(tokens), 0)
+        FROM usage_log
+        WHERE email = ?
+          AND date(created_at, 'localtime') >= date('now', '-6 days', 'localtime')
+        """,
+        (email,),
+    )
+    weekly_cost, weekly_tokens = c.fetchone()
+    conn.close()
+    return {
+        "daily_cost": daily_cost,
+        "daily_tokens": daily_tokens,
+        "weekly_cost": weekly_cost,
+        "weekly_tokens": weekly_tokens,
+    }
 
 def get_user_cost(email):
     conn = sqlite3.connect(DB_NAME)
@@ -171,8 +242,33 @@ def save_conversation(email, nodes_map, root_id):
 def get_user_conversations(email):
     with sqlite3.connect("chat_users.db") as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, title, updated_at FROM conversations WHERE email = ? ORDER BY updated_at DESC", (email,))
-        return cursor.fetchall()
+        cursor.execute(
+            "SELECT id, title, updated_at, tree_data FROM conversations WHERE email = ? ORDER BY updated_at DESC",
+            (email,),
+        )
+        rows = cursor.fetchall()
+        filtered = []
+        for cid, title, updated_at, tree_data in rows:
+            try:
+                data = json.loads(tree_data) if tree_data else {}
+            except json.JSONDecodeError:
+                data = {}
+            if _conversation_has_user_input(data):
+                filtered.append((cid, title, updated_at))
+        return filtered
+
+
+def _conversation_has_user_input(tree_data: dict) -> bool:
+    """Return True when a conversation contains a non-empty user message."""
+    if not tree_data:
+        return False
+    stack = [tree_data]
+    while stack:
+        node = stack.pop()
+        if node.get("role") == "user" and node.get("content", "").strip():
+            return True
+        stack.extend(node.get("children", []))
+    return False
 
 
 def load_conversation(cid):
@@ -185,3 +281,13 @@ def load_conversation(cid):
             # Return flattened dict
             return flatten_tree(data)
     return None
+
+
+def delete_conversation(email, chat_id):
+    with sqlite3.connect("chat_users.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM conversations WHERE id = ? AND email = ?",
+            (chat_id, email),
+        )
+        conn.commit()

@@ -1,15 +1,60 @@
 import os
-from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    load_dotenv = None
+
+def _load_env_file(path: Path, override: bool) -> bool:
+    if load_dotenv is not None:
+        load_dotenv(dotenv_path=path, override=override)
+        return True
+
+    # Minimal .env parser fallback (KEY=VALUE, supports quotes, ignores comments).
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if not key:
+                continue
+            if override or key not in os.environ:
+                os.environ[key] = val
+        return True
+    except Exception:
+        return False
+
+def _try_load_dotenv() -> None:
+    config_file = Path(__file__).resolve()
+    candidate_paths = [
+        config_file.parents[2] / ".env",  # conversationTree/.env (your setup)
+        config_file.parents[1] / ".env",  # repo root: gemini-alternative-ui/.env
+        Path.cwd() / ".env",              # run dir (often reflex_tree/)
+    ]
+    for path in candidate_paths:
+        if path.exists():
+            _load_env_file(path, override=True)
+            return
+
+_try_load_dotenv()
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY") 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+SEARCH_API_KEY = os.getenv("TAVILY_API_KEY") or os.getenv("SEARCH_API_KEY")
 
 # Pricing in USD per 1 Million tokens
 MODELS = {
 
+    "ChatGPT (GPT-5.2 Pro)": {
+        "id": "gpt-5.2-pro",
+        "provider": "openai",
+        "pricing": {"INPUT_PER_1M": 2.50, "OUTPUT_PER_1M": 10.00}
+    },
     "ChatGPT (GPT-5.2)": {
         "id": "gpt-5.2", 
         "provider": "openai",

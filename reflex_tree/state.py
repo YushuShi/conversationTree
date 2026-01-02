@@ -1,12 +1,21 @@
 import reflex as rx
 import os
 import uuid
+import json
+import datetime
+from urllib import request, error
 from typing import List, Dict, Optional, Any
+from pydantic import BaseModel
 from .classes import ChatNode, flatten_tree, NodeView
 from . import config, database
 from google.genai import types, Client
 import openai
 import anthropic
+
+
+class ChatGroup(BaseModel):
+    date: str
+    chats: List[Dict[str, Any]]
 
 class State(rx.State):
     """The app state."""
@@ -41,10 +50,16 @@ class State(rx.State):
         if user_data:
             self.user = user_data
             self.show_login = False
+            self.show_history_panel = False
+            self.show_usage_panel = False
             # Load API Keys
             if user_data.get("openai_key"): self.openai_api_key = user_data["openai_key"]
             if user_data.get("anthropic_key"): self.anthropic_api_key = user_data["anthropic_key"]
             if user_data.get("google_key"): self.google_api_key = user_data["google_key"]
+            if user_data.get("tavily_key"): self.search_api_key = user_data["tavily_key"]
+            self._start_session()
+            self.refresh_usage_rollups()
+            self.load_chat_list()
         else:
             return rx.window_alert("Invalid email or password.")
 
@@ -54,13 +69,18 @@ class State(rx.State):
         self.auth_password = ""
         
         # Reset Session Stats
-        self.session_cost = 0.0
-        self.session_tokens = 0
+        self._reset_session_stats()
         
         # Clear keys 
         self.openai_api_key = config.OPENAI_API_KEY or ""
         self.anthropic_api_key = config.ANTHROPIC_API_KEY or ""
         self.google_api_key = config.GOOGLE_API_KEY or ""
+        self.search_api_key = config.SEARCH_API_KEY or ""
+        self.use_google_search = False
+        self.daily_cost = 0.0
+        self.daily_tokens = 0
+        self.weekly_cost = 0.0
+        self.weekly_tokens = 0
         
         # Reset UI
         self.show_login = True
@@ -74,6 +94,9 @@ class State(rx.State):
     openai_api_key: str = config.OPENAI_API_KEY or ""
     anthropic_api_key: str = config.ANTHROPIC_API_KEY or ""
     google_api_key: str = config.GOOGLE_API_KEY or ""
+    search_api_key: str = config.SEARCH_API_KEY or ""
+    show_settings: bool = False
+    session_id: str = ""
 
     @rx.var
     def current_api_key_placeholder(self) -> str:
@@ -104,19 +127,40 @@ class State(rx.State):
         if provider == "openai": self.openai_api_key = key
         elif provider == "anthropic": self.anthropic_api_key = key
         elif provider == "google": self.google_api_key = key
-        
-        # Persist if logged in
-        if self.user:
-            database.update_user_api_keys(
-                self.user["email"], 
-                self.openai_api_key, 
-                self.anthropic_api_key, 
-                self.google_api_key
-            )
 
     # --- Deprecated specific setters if generic one works? 
     # Let's keep them for safety if needed, or remove to clean up.
     # User asked to combine, so generic logic replaces specific manual calls.
+    def set_openai_api_key(self, key: str):
+        self.openai_api_key = key
+
+    def set_anthropic_api_key(self, key: str):
+        self.anthropic_api_key = key
+
+    def set_google_api_key(self, key: str):
+        self.google_api_key = key
+
+    def set_search_api_key(self, key: str):
+        self.search_api_key = key
+        if not key:
+            self.use_google_search = False
+
+    def save_api_keys(self):
+        if not self.user:
+            return
+        database.update_user_api_keys(
+            self.user["email"],
+            self.openai_api_key,
+            self.anthropic_api_key,
+            self.google_api_key,
+            self.search_api_key,
+        )
+
+    def toggle_settings_modal(self):
+        self.show_settings = not self.show_settings
+
+    def set_history_search_query(self, query: str):
+        self.history_search_query = query or ""
 
     # --- Conversation State ---
     nodes: Dict[str, ChatNode] = {}
@@ -132,11 +176,15 @@ class State(rx.State):
     
     # --- Sidebar State ---
     chat_list: List[Dict] = []
+    history_search_query: str = ""
+    active_chat_id: str = ""
 
     
     # --- UI State ---
     show_full_history: bool = False
     processing: bool = False
+    show_history_panel: bool = True
+    show_usage_panel: bool = True
     
     def set_auth_email(self, email: str):
         self.auth_email = email
@@ -145,7 +193,43 @@ class State(rx.State):
         self.auth_password = password
         
     def set_use_google_search(self, enable: bool):
+        if enable and not self.search_api_key:
+            return rx.window_alert("Please set a Tavily API key before enabling search.")
         self.use_google_search = enable
+
+    def toggle_history_panel(self):
+        self.show_history_panel = not self.show_history_panel
+
+    def toggle_usage_panel(self):
+        self.show_usage_panel = not self.show_usage_panel
+
+    @rx.var
+    def filtered_chat_list(self) -> List[Dict]:
+        if not self.history_search_query:
+            return self.chat_list
+        query = self.history_search_query.lower()
+        return [
+            chat
+            for chat in self.chat_list
+            if query in (chat.get("title", "") or "").lower()
+        ]
+
+    @rx.var
+    def chat_groups(self) -> List["ChatGroup"]:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for chat in self.filtered_chat_list:
+            updated_at = (chat.get("updated_at") or "").strip()
+            try:
+                date_label = datetime.datetime.fromisoformat(updated_at).date().isoformat()
+            except ValueError:
+                date_label = "Unknown Date"
+            grouped.setdefault(date_label, []).append(chat)
+        return [
+            ChatGroup(date=date_label, chats=grouped[date_label])
+            for date_label in grouped
+        ]
+
+
     
     def on_load(self):
         """Initialize the app."""
@@ -155,17 +239,25 @@ class State(rx.State):
             # Try to load latest if logged in?
             # For now just start new or keep current
             self.start_new_chat()
+        self._start_session()
             
         if self.user:
+            self.show_history_panel = False
+            self.show_usage_panel = False
             self.load_chat_list()
+            self.refresh_usage_rollups()
         else:
             # Reset stats for guest on refresh
-            self.session_cost = 0.0
-            self.session_tokens = 0
+            self._reset_session_stats()
             # Reset keys
             self.openai_api_key = config.OPENAI_API_KEY or ""
             self.anthropic_api_key = config.ANTHROPIC_API_KEY or ""
             self.google_api_key = config.GOOGLE_API_KEY or ""
+            self.search_api_key = config.SEARCH_API_KEY or ""
+            self.daily_cost = 0.0
+            self.daily_tokens = 0
+            self.weekly_cost = 0.0
+            self.weekly_tokens = 0
 
     def start_new_chat(self):
         """Save current and start new."""
@@ -177,6 +269,7 @@ class State(rx.State):
         self.nodes = {root.id: root}
         self.root_id = root.id
         self.current_node_id = root.id
+        self.active_chat_id = ""
         self.processing = False
         
     def add_new_topic(self):
@@ -187,10 +280,15 @@ class State(rx.State):
         
     def load_chat_list(self):
         if self.user:
-            self.chat_list = [
+            chats = [
                 {"id": r[0], "title": r[1], "updated_at": r[2]} 
                 for r in database.get_user_conversations(self.user["email"])
             ]
+            self.chat_list = sorted(
+                chats,
+                key=lambda chat: chat.get("updated_at") or "",
+                reverse=True,
+            )
             
     def load_chat(self, chat_id: str):
         if self.user:
@@ -202,13 +300,42 @@ class State(rx.State):
              if nodes:
                  self.nodes = nodes
                  self.root_id = chat_id
+                 self.active_chat_id = chat_id
                  # Set current to last user message or root?
                  # Let's simple check root
-                 if chat_id in self.nodes:
-                     self.current_node_id = chat_id
-                     # Try to find last active node?
-                     # For now just root is safe, or last added
+                 self.current_node_id = self._latest_user_node_id() or chat_id
+                 self.collapsed_nodes = []
+                 self.show_full_history = False
                  self.load_chat_list() # Refresh list order
+
+    def _latest_user_node_id(self) -> Optional[str]:
+        latest_id = None
+        latest_time = -1
+        for node_id, node in self.nodes.items():
+            if node.role != "user":
+                continue
+            try:
+                node_time = uuid.UUID(node.timestamp).time
+            except (ValueError, TypeError, AttributeError):
+                node_time = -1
+            if node_time > latest_time:
+                latest_time = node_time
+                latest_id = node_id
+        return latest_id
+
+    def delete_chat(self, chat_id: str):
+        if not self.user:
+            return
+        database.delete_conversation(self.user["email"], chat_id)
+        if chat_id == self.active_chat_id:
+            self.active_chat_id = ""
+        if chat_id == self.root_id:
+            self.nodes = {}
+            self.root_id = ""
+            self.current_node_id = ""
+            self.start_new_chat()
+            return
+        self.load_chat_list()
 
     
     # --- Drag & Drop ---
@@ -471,6 +598,10 @@ class State(rx.State):
             
             # Build History (Standard format)
             full_history = self.get_history_list(user_node_id)
+            search_context = None
+            if self.use_google_search and self.search_api_key:
+                user_query = self.nodes.get(user_node_id).content if user_node_id in self.nodes else ""
+                search_context = self._fetch_search_context(user_query)
             
             model_text = ""
             total_toks = 0
@@ -481,7 +612,10 @@ class State(rx.State):
                     raise Exception("OpenAI API Key not set.")
                 
                 client = openai.AsyncOpenAI(api_key=self.openai_api_key)
-                msgs = [{"role": "system", "content": "You are a helpful assistant."}]
+                system_prompt = "You are a helpful assistant."
+                if search_context:
+                    system_prompt = f"{system_prompt}\n\nWeb search results:\n{search_context}"
+                msgs = [{"role": "system", "content": system_prompt}]
                 for item in full_history:
                     if item["role"] != "system":
                          role = "user" if item["role"] == "user" else "assistant"
@@ -523,12 +657,15 @@ class State(rx.State):
                          role = "user" if item["role"] == "user" else "assistant"
                          msgs.append({"role": role, "content": item["content"]})
                 
+                system_prompt = "You are a helpful assistant."
+                if search_context:
+                    system_prompt = f"{system_prompt}\n\nWeb search results:\n{search_context}"
                 response = await client.messages.create(
                     model=model_id,
                     max_tokens=1024,
                     temperature=self.temperature,
                     messages=msgs,
-                    system="You are a helpful assistant."
+                    system=system_prompt
                 )
                 model_text = response.content[0].text
                 
@@ -548,6 +685,13 @@ class State(rx.State):
                 client = Client(api_key=self.google_api_key)
                 
                 contents = []
+                if search_context:
+                    contents.append(
+                        types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text=f"Web search results:\n{search_context}")],
+                        )
+                    )
                 for item in full_history:
                     if item["role"] == "user":
                         contents.append(types.Content(role="user", parts=[types.Part.from_text(text=item["content"])]))
@@ -725,6 +869,13 @@ class State(rx.State):
         
         # Filter out system
         visible = [h for h in hist if h["role"] != "system"]
+        query = self.history_search_query.strip().lower()
+        if query:
+            return [
+                h
+                for h in visible
+                if query in (h.get("content") or "").lower()
+            ]
         
         if not self.show_full_history and len(visible) > 1:
             # Show last Q&A pair (or last message if User)
@@ -743,6 +894,36 @@ class State(rx.State):
     # --- Stats ---
     session_cost: float = 0.0
     session_tokens: int = 0
+    daily_cost: float = 0.0
+    daily_tokens: int = 0
+    weekly_cost: float = 0.0
+    weekly_tokens: int = 0
+
+    def _reset_session_stats(self):
+        self.session_cost = 0.0
+        self.session_tokens = 0
+
+    def _start_session(self):
+        self.session_id = str(uuid.uuid4())[:8]
+        self._reset_session_stats()
+        if not self.user:
+            self.daily_cost = 0.0
+            self.daily_tokens = 0
+            self.weekly_cost = 0.0
+            self.weekly_tokens = 0
+
+    def refresh_usage_rollups(self):
+        if not self.user:
+            self.daily_cost = self.session_cost
+            self.daily_tokens = self.session_tokens
+            self.weekly_cost = self.session_cost
+            self.weekly_tokens = self.session_tokens
+            return
+        rollups = database.get_usage_rollups(self.user["email"])
+        self.daily_cost = rollups["daily_cost"]
+        self.daily_tokens = rollups["daily_tokens"]
+        self.weekly_cost = rollups["weekly_cost"]
+        self.weekly_tokens = rollups["weekly_tokens"]
     
     def update_stats(self, cost: float, tokens: int):
         # Update Session Stats (Always)
@@ -759,4 +940,51 @@ class State(rx.State):
             
             # Update DB
             database.update_user_stats(self.user["email"], cost, tokens)
+            database.log_usage(
+                self.user["email"],
+                cost,
+                tokens,
+                self.session_id,
+                datetime.datetime.now().isoformat(),
+            )
+            self.refresh_usage_rollups()
+        else:
+            self.daily_cost = self.session_cost
+            self.daily_tokens = self.session_tokens
+            self.weekly_cost = self.session_cost
+            self.weekly_tokens = self.session_tokens
 
+    def _fetch_search_context(self, query: str) -> Optional[str]:
+        if not query or not self.search_api_key:
+            return None
+        payload = {
+            "api_key": self.search_api_key,
+            "query": query,
+            "search_depth": "basic",
+            "max_results": 5,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            "https://api.tavily.com/search",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                raw_body = resp.read()
+            body = json.loads(raw_body.decode("utf-8"))
+        except error.URLError as exc:
+            print(f"Tavily search failed: {exc}")
+            return None
+        results = body.get("results", [])
+        if not results:
+            return None
+        lines = []
+        for idx, result in enumerate(results, start=1):
+            title = (result.get("title") or "").strip()
+            url = (result.get("url") or "").strip()
+            content = (result.get("content") or "").strip()
+            if not title and not url and not content:
+                continue
+            lines.append(f"{idx}. {title}\n{url}\n{content}".strip())
+        return "\n\n".join(lines) if lines else None
