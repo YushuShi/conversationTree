@@ -185,7 +185,7 @@ import uuid
 import datetime
 from .classes import ChatNode, build_tree_dict, flatten_tree
 
-def save_conversation(email, nodes_map, root_id):
+def save_conversation(email, nodes_map, root_id, touch_updated_at: bool = True):
     """
     Saves a conversation tree to the database for a user.
     If the root_id already exists for this user, update it.
@@ -220,8 +220,16 @@ def save_conversation(email, nodes_map, root_id):
         now = datetime.datetime.now().isoformat()
         
         if exists:
-            cursor.execute("UPDATE conversations SET tree_data = ?, updated_at = ? WHERE id = ?", 
-                           (json_data, now, root_id))
+            if touch_updated_at:
+                cursor.execute(
+                    "UPDATE conversations SET tree_data = ?, updated_at = ? WHERE id = ?",
+                    (json_data, now, root_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE conversations SET tree_data = ? WHERE id = ?",
+                    (json_data, root_id),
+                )
         else:
             # Generate a title
             # Search for first user message

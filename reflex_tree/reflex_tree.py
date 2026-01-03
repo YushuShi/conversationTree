@@ -361,7 +361,6 @@ def sidebar():
         ),
         # Removed Spacer to eliminate gap
         rx.divider(margin_y="2"),
-        rx.divider(margin_y="2"),
         rx.vstack(
             rx.hstack(
                 rx.text("Token Usage & Cost", size="2", weight="bold"),
@@ -448,6 +447,9 @@ def sidebar():
             border_radius="4px",
             margin_y="4"
         ),
+        id="sidebar",
+        data_min_width="250",
+        data_max_percent="0.5",
         width="300px",
         min_width="250px",
         max_width="50%",
@@ -455,7 +457,7 @@ def sidebar():
         padding="4",
         border_right=f"1px solid {rx.color('gray', 3)}",
         bg=rx.color("gray", 1),
-        style={"resize": "horizontal", "overflow": "auto", "z_index": "10"}
+        style={"overflow": "auto", "z_index": "10"}
     )
 
 def chat_message(message: dict):
@@ -617,7 +619,61 @@ def chat_area():
 def index():
     return rx.hstack(
         sidebar(),
+        rx.box(
+            id="sidebar-resizer",
+            width="6px",
+            height="100vh",
+            bg=rx.color("gray", 3),
+            cursor="col-resize",
+            _hover={"bg": rx.color("gray", 5)},
+            flex_shrink="0",
+        ),
         chat_area(),
+        rx.el.script(
+            """
+(() => {
+  if (window.__sidebarResizerInstalled) return;
+  window.__sidebarResizerInstalled = true;
+
+  const sidebar = document.getElementById("sidebar");
+  const resizer = document.getElementById("sidebar-resizer");
+  if (!sidebar || !resizer) return;
+
+  const minWidth = parseInt(sidebar.dataset.minWidth || "250", 10);
+  const maxPercent = parseFloat(sidebar.dataset.maxPercent || "0.5");
+  let startX = 0;
+  let startWidth = 0;
+
+  const clampWidth = (width) => {
+    const maxWidth = Math.floor(window.innerWidth * maxPercent);
+    return Math.min(Math.max(width, minWidth), maxWidth);
+  };
+
+  const onMove = (event) => {
+    const dx = event.clientX - startX;
+    sidebar.style.width = `${clampWidth(startWidth + dx)}px`;
+  };
+
+  const stopDrag = () => {
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", stopDrag);
+    document.body.style.userSelect = "";
+  };
+
+  const startDrag = (event) => {
+    if (!event.isPrimary) return;
+    event.preventDefault();
+    startX = event.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    document.body.style.userSelect = "none";
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", stopDrag);
+  };
+
+  resizer.addEventListener("pointerdown", startDrag);
+})();
+            """
+        ),
         spacing="0",
         height="100vh",
         width="100vw"

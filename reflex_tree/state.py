@@ -294,7 +294,12 @@ class State(rx.State):
         if self.user:
             # Save current first
              if self.root_id:
-                database.save_conversation(self.user["email"], self.nodes, self.root_id)
+                database.save_conversation(
+                    self.user["email"],
+                    self.nodes,
+                    self.root_id,
+                    touch_updated_at=False,
+                )
             
              nodes = database.load_conversation(chat_id)
              if nodes:
