@@ -90,6 +90,11 @@ MODELS = {
         "provider": "google",
         "pricing": {"INPUT_PER_1M": 0.10, "OUTPUT_PER_1M": 0.40}
     },
+    "Gemini 3.0 Flash": {
+        "id": "gemini-3.0-flash",
+        "provider": "google",
+        "pricing": {"INPUT_PER_1M": 0.10, "OUTPUT_PER_1M": 0.40}
+    },
     "Gemini 3.0 Pro (Preview)": {
         "id": "gemini-3-pro-preview",
         "provider": "google",

@@ -141,15 +141,20 @@ def settings_modal():
     return rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title("API Settings"),
-            rx.dialog.description("Store provider-specific API keys for this account."),
+            rx.dialog.description("Keys are stored only in this browser and are not saved on the server."),
             rx.vstack(
+                rx.checkbox(
+                    "Remember keys on this device",
+                    checked=state.State.remember_keys_enabled,
+                    on_change=state.State.set_remember_keys,
+                ),
                 rx.vstack(
                     rx.text("OpenAI", size="2", weight="bold"),
                     rx.input(
                         placeholder="OpenAI API Key (sk-...)",
                         type="password",
                         on_change=state.State.set_openai_api_key,
-                        value=state.State.openai_api_key,
+                        value=state.State.openai_api_key_value,
                         width="100%"
                     ),
                     spacing="2",
@@ -161,7 +166,7 @@ def settings_modal():
                         placeholder="Anthropic API Key (sk-ant...)",
                         type="password",
                         on_change=state.State.set_anthropic_api_key,
-                        value=state.State.anthropic_api_key,
+                        value=state.State.anthropic_api_key_value,
                         width="100%"
                     ),
                     spacing="2",
@@ -173,7 +178,7 @@ def settings_modal():
                         placeholder="Google API Key",
                         type="password",
                         on_change=state.State.set_google_api_key,
-                        value=state.State.google_api_key,
+                        value=state.State.google_api_key_value,
                         width="100%"
                     ),
                     spacing="2",
@@ -185,7 +190,7 @@ def settings_modal():
                         placeholder="TAVILY_API_KEY",
                         type="password",
                         on_change=state.State.set_search_api_key,
-                        value=state.State.search_api_key,
+                        value=state.State.search_api_key_value,
                         width="100%"
                     ),
                     spacing="2",

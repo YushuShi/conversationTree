@@ -95,29 +95,21 @@ def create_user(email, password):
 def authenticate_user(email, password):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT email, total_cost, total_tokens, openai_key, anthropic_key, google_key, tavily_key FROM users WHERE email = ? AND password_hash = ?", 
+    c.execute("SELECT email, total_cost, total_tokens FROM users WHERE email = ? AND password_hash = ?", 
               (email, hash_password(password)))
     row = c.fetchone()
     conn.close()
     if row:
         return {
             "email": row[0], 
-            "total_cost": row[1], 
+            "total_cost": row[1],
             "total_tokens": row[2],
-            "openai_key": row[3],
-            "anthropic_key": row[4],
-            "google_key": row[5],
-            "tavily_key": row[6]
         }
     return None
 
 def update_user_api_keys(email, openai_key, anthropic_key, google_key, tavily_key):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE users SET openai_key = ?, anthropic_key = ?, google_key = ?, tavily_key = ? WHERE email = ?", 
-              (openai_key, anthropic_key, google_key, tavily_key, email))
-    conn.commit()
-    conn.close()
+    # API keys are intentionally not stored server-side.
+    return
 
 def update_user_stats(email, cost_increment, token_increment):
     conn = sqlite3.connect(DB_NAME)

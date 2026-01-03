@@ -52,11 +52,6 @@ class State(rx.State):
             self.show_login = False
             self.show_history_panel = False
             self.show_usage_panel = False
-            # Load API Keys
-            if user_data.get("openai_key"): self.openai_api_key = user_data["openai_key"]
-            if user_data.get("anthropic_key"): self.anthropic_api_key = user_data["anthropic_key"]
-            if user_data.get("google_key"): self.google_api_key = user_data["google_key"]
-            if user_data.get("tavily_key"): self.search_api_key = user_data["tavily_key"]
             self._start_session()
             self.refresh_usage_rollups()
             self.load_chat_list()
@@ -71,11 +66,6 @@ class State(rx.State):
         # Reset Session Stats
         self._reset_session_stats()
         
-        # Clear keys 
-        self.openai_api_key = config.OPENAI_API_KEY or ""
-        self.anthropic_api_key = config.ANTHROPIC_API_KEY or ""
-        self.google_api_key = config.GOOGLE_API_KEY or ""
-        self.search_api_key = config.SEARCH_API_KEY or ""
         self.use_google_search = False
         self.daily_cost = 0.0
         self.daily_tokens = 0
@@ -91,10 +81,15 @@ class State(rx.State):
         return self.user is not None
 
     # --- API Keys ---
-    openai_api_key: str = config.OPENAI_API_KEY or ""
-    anthropic_api_key: str = config.ANTHROPIC_API_KEY or ""
-    google_api_key: str = config.GOOGLE_API_KEY or ""
-    search_api_key: str = config.SEARCH_API_KEY or ""
+    remember_keys: rx.LocalStorage = rx.LocalStorage("true")
+    openai_api_key_saved: rx.LocalStorage = rx.LocalStorage("")
+    anthropic_api_key_saved: rx.LocalStorage = rx.LocalStorage("")
+    google_api_key_saved: rx.LocalStorage = rx.LocalStorage("")
+    search_api_key_saved: rx.LocalStorage = rx.LocalStorage("")
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    google_api_key: str = ""
+    search_api_key: str = ""
     show_settings: bool = False
     session_id: str = ""
 
@@ -113,48 +108,107 @@ class State(rx.State):
         model = config.MODELS.get(self.selected_model_key)
         if not model: return ""
         provider = model.get("provider", "google")
-        
-        if provider == "openai": return self.openai_api_key
-        if provider == "anthropic": return self.anthropic_api_key
-        if provider == "google": return self.google_api_key
+        return self._get_provider_key(provider)
+
+    @rx.var
+    def remember_keys_enabled(self) -> bool:
+        return str(self.remember_keys).lower() == "true"
+
+    @rx.var
+    def openai_api_key_value(self) -> str:
+        return self._get_provider_key("openai")
+
+    @rx.var
+    def anthropic_api_key_value(self) -> str:
+        return self._get_provider_key("anthropic")
+
+    @rx.var
+    def google_api_key_value(self) -> str:
+        return self._get_provider_key("google")
+
+    @rx.var
+    def search_api_key_value(self) -> str:
+        return self._get_provider_key("search")
+
+    def _get_provider_key(self, provider: str) -> str:
+        remember = str(self.remember_keys).lower() == "true"
+        if provider == "openai":
+            return self.openai_api_key_saved if remember else self.openai_api_key
+        if provider == "anthropic":
+            return self.anthropic_api_key_saved if remember else self.anthropic_api_key
+        if provider == "google":
+            return self.google_api_key_saved if remember else self.google_api_key
+        if provider == "search":
+            return self.search_api_key_saved if remember else self.search_api_key
         return ""
 
     def set_current_api_key(self, key: str):
         model = config.MODELS.get(self.selected_model_key)
         if not model: return
         provider = model.get("provider", "google")
-        
-        if provider == "openai": self.openai_api_key = key
-        elif provider == "anthropic": self.anthropic_api_key = key
-        elif provider == "google": self.google_api_key = key
+        self._set_provider_key(provider, key)
+
+    def set_remember_keys(self, enable: bool):
+        self.remember_keys = "true" if enable else "false"
+        if enable:
+            if self.openai_api_key:
+                self.openai_api_key_saved = self.openai_api_key
+            if self.anthropic_api_key:
+                self.anthropic_api_key_saved = self.anthropic_api_key
+            if self.google_api_key:
+                self.google_api_key_saved = self.google_api_key
+            if self.search_api_key:
+                self.search_api_key_saved = self.search_api_key
+        else:
+            self.openai_api_key_saved = ""
+            self.anthropic_api_key_saved = ""
+            self.google_api_key_saved = ""
+            self.search_api_key_saved = ""
 
     # --- Deprecated specific setters if generic one works? 
     # Let's keep them for safety if needed, or remove to clean up.
     # User asked to combine, so generic logic replaces specific manual calls.
     def set_openai_api_key(self, key: str):
-        self.openai_api_key = key
+        self._set_provider_key("openai", key)
 
     def set_anthropic_api_key(self, key: str):
-        self.anthropic_api_key = key
+        self._set_provider_key("anthropic", key)
 
     def set_google_api_key(self, key: str):
-        self.google_api_key = key
+        self._set_provider_key("google", key)
 
     def set_search_api_key(self, key: str):
-        self.search_api_key = key
+        self._set_provider_key("search", key)
         if not key:
             self.use_google_search = False
 
+    def _set_provider_key(self, provider: str, key: str):
+        remember = str(self.remember_keys).lower() == "true"
+        if provider == "openai":
+            if remember:
+                self.openai_api_key_saved = key
+            else:
+                self.openai_api_key = key
+        elif provider == "anthropic":
+            if remember:
+                self.anthropic_api_key_saved = key
+            else:
+                self.anthropic_api_key = key
+        elif provider == "google":
+            if remember:
+                self.google_api_key_saved = key
+            else:
+                self.google_api_key = key
+        elif provider == "search":
+            if remember:
+                self.search_api_key_saved = key
+            else:
+                self.search_api_key = key
+
     def save_api_keys(self):
-        if not self.user:
-            return
-        database.update_user_api_keys(
-            self.user["email"],
-            self.openai_api_key,
-            self.anthropic_api_key,
-            self.google_api_key,
-            self.search_api_key,
-        )
+        if str(self.remember_keys).lower() == "true":
+            return rx.window_alert("Keys are stored in this browser only.")
+        return rx.window_alert("Keys are stored for this session only.")
 
     def toggle_settings_modal(self):
         self.show_settings = not self.show_settings
@@ -193,7 +247,7 @@ class State(rx.State):
         self.auth_password = password
         
     def set_use_google_search(self, enable: bool):
-        if enable and not self.search_api_key:
+        if enable and not self._get_provider_key("search"):
             return rx.window_alert("Please set a Tavily API key before enabling search.")
         self.use_google_search = enable
 
@@ -249,11 +303,6 @@ class State(rx.State):
         else:
             # Reset stats for guest on refresh
             self._reset_session_stats()
-            # Reset keys
-            self.openai_api_key = config.OPENAI_API_KEY or ""
-            self.anthropic_api_key = config.ANTHROPIC_API_KEY or ""
-            self.google_api_key = config.GOOGLE_API_KEY or ""
-            self.search_api_key = config.SEARCH_API_KEY or ""
             self.daily_cost = 0.0
             self.daily_tokens = 0
             self.weekly_cost = 0.0
@@ -542,6 +591,8 @@ class State(rx.State):
     
     async def process_chat(self, form_data: dict):
         """Handle new user message."""
+        if not form_data:
+            return
         user_text = form_data.get("chat_input", "").strip()
         if not user_text:
             return
@@ -613,10 +664,11 @@ class State(rx.State):
             total_step_cost = 0.0
             
             if provider == "openai":
-                if not self.openai_api_key:
+                api_key = self._get_provider_key("openai")
+                if not api_key:
                     raise Exception("OpenAI API Key not set.")
                 
-                client = openai.AsyncOpenAI(api_key=self.openai_api_key)
+                client = openai.AsyncOpenAI(api_key=api_key)
                 system_prompt = "You are a helpful assistant."
                 if search_context:
                     system_prompt = f"{system_prompt}\n\nWeb search results:\n{search_context}"
@@ -652,10 +704,11 @@ class State(rx.State):
                      self.update_stats(total_step_cost, total_toks)
 
             elif provider == "anthropic":
-                if not self.anthropic_api_key:
+                api_key = self._get_provider_key("anthropic")
+                if not api_key:
                     raise Exception("Anthropic API Key not set.")
                 
-                client = anthropic.AsyncAnthropic(api_key=self.anthropic_api_key)
+                client = anthropic.AsyncAnthropic(api_key=api_key)
                 msgs = []
                 for item in full_history:
                     if item["role"] != "system": # Claude system prompt is separate
@@ -683,11 +736,12 @@ class State(rx.State):
                     self.update_stats(total_step_cost, total_toks)
 
             elif provider == "google": # Google Gemini
-                if not self.google_api_key:
+                api_key = self._get_provider_key("google")
+                if not api_key:
                      raise Exception("Google API Key not set.")
 
                 # Use async client
-                client = Client(api_key=self.google_api_key)
+                client = Client(api_key=api_key)
                 
                 contents = []
                 if search_context:
@@ -960,10 +1014,11 @@ class State(rx.State):
             self.weekly_tokens = self.session_tokens
 
     def _fetch_search_context(self, query: str) -> Optional[str]:
-        if not query or not self.search_api_key:
+        api_key = self._get_provider_key("search")
+        if not query or not api_key:
             return None
         payload = {
-            "api_key": self.search_api_key,
+            "api_key": api_key,
             "query": query,
             "search_depth": "basic",
             "max_results": 5,
