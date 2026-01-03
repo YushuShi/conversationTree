@@ -18,6 +18,7 @@
 - `ANTHROPIC_API_KEY` (for Claude models)
 - `GEMINI_API_KEY` (for Gemini models)
 - `TAVILY_API_KEY` (optional; enables “Deep Search” web grounding for OpenAI/Gemini/Anthropic)
+- `DATABASE_URL` (optional; Postgres connection string for external chat history storage)
 
 ## Usage Tracking
 
