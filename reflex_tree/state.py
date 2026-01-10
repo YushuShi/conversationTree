@@ -206,6 +206,9 @@ class State(rx.State):
                 self.search_api_key = key
 
     def save_api_keys(self):
+        search_key = self._get_provider_key("search")
+        if search_key and not self._validate_tavily_key(search_key):
+            return rx.window_alert("Tavily API key is invalid or could not be verified.")
         if str(self.remember_keys).lower() == "true":
             return rx.window_alert("Keys are stored in this browser only.")
         return rx.window_alert("Keys are stored for this session only.")
@@ -247,8 +250,12 @@ class State(rx.State):
         self.auth_password = password
         
     def set_use_google_search(self, enable: bool):
-        if enable and not self._get_provider_key("search"):
-            return rx.window_alert("Please set a Tavily API key before enabling search.")
+        if enable:
+            api_key = self._get_provider_key("search")
+            if not api_key:
+                return rx.window_alert("Please set a Tavily API key before enabling search.")
+            if not self._validate_tavily_key(api_key):
+                return rx.window_alert("Tavily API key is invalid or could not be verified.")
         self.use_google_search = enable
 
     def toggle_history_panel(self):
@@ -1048,3 +1055,32 @@ class State(rx.State):
                 continue
             lines.append(f"{idx}. {title}\n{url}\n{content}".strip())
         return "\n\n".join(lines) if lines else None
+
+    def _validate_tavily_key(self, api_key: str) -> bool:
+        if not api_key:
+            return False
+        payload = {
+            "api_key": api_key,
+            "query": "healthcheck",
+            "search_depth": "basic",
+            "max_results": 1,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            "https://api.tavily.com/search",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                if resp.status and resp.status >= 400:
+                    return False
+                raw_body = resp.read()
+            body = json.loads(raw_body.decode("utf-8"))
+        except error.HTTPError:
+            return False
+        except error.URLError:
+            return False
+        except ValueError:
+            return False
+        return isinstance(body, dict)
